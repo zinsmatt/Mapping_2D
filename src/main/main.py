@@ -129,6 +129,7 @@ def main():
 
     pub_velocity = rospy.Publisher("perception_vel", Vector3, queue_size=10)
     pub_acc_cmd = rospy.Publisher("acc_cmd", Vector3, queue_size=10)
+    pub_landmarks_obs = rospy.Publisher("landmarks_obs", Float64MultiArray, queue_size=10)
     pub_quit = rospy.Publisher("perception_quit", Bool, queue_size=2)
     sub_est_pos_integ = rospy.Subscriber("estimation_pos_integration", Vector3, position_estimation_integration_callback)
     sub_est_pos_kf = rospy.Subscriber("estimation_pos_kf", Float64MultiArray, position_estimation_kf_callback)
@@ -155,8 +156,14 @@ def main():
     # anchors = [(20, 20), (-30, 30), (-35, 20), (10, -35)]
     # anchors = np.vstack((np.random.uniform(-10, XMAX, size=NUM_ANCHORS),
     #                      np.random.uniform(-100, 100, size=NUM_ANCHORS))).T
-    anchors = np.vstack((np.random.uniform(-100, 100, size=NUM_ANCHORS),
-                         np.random.uniform(-100, 100, size=NUM_ANCHORS))).T
+    # anchors = np.vstack((np.random.uniform(-100, 100, size=NUM_ANCHORS),
+    #                      np.random.uniform(-100, 100, size=NUM_ANCHORS))).T
+    
+    anchors = np.vstack((np.random.uniform(-50, 50, size=NUM_ANCHORS),
+                         np.random.uniform(-50, 50, size=NUM_ANCHORS))).T
+    
+    
+    
 
     pygame.key.set_repeat(int(1000/FPS))
 
@@ -185,6 +192,9 @@ def main():
         # if pressed[pygame.K_RIGHT]:
         #     robot.vx += VELOCITY_INCR
         
+        acc_x = 0.0
+        acc_y = 0.0
+        
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 pub_quit.publish(Bool(True))
@@ -199,14 +209,24 @@ def main():
             # # if event.type == KEYDOWN and (event.key == K_RIGHT):
             # #     robot.theta -= THETA_INCR
 
+            # if event.type == KEYDOWN and (event.key == K_UP):
+            #     robot.vy += VELOCITY_INCR
+            # if event.type == KEYDOWN and (event.key == K_DOWN):
+            #     robot.vy -= VELOCITY_INCR
+            # if event.type == KEYDOWN and (event.key == K_LEFT):
+            #     robot.vx -= VELOCITY_INCR
+            # if event.type == KEYDOWN and (event.key == K_RIGHT):
+            #     robot.vx += VELOCITY_INCR
+                
+            ACC_INCR = 10
             if event.type == KEYDOWN and (event.key == K_UP):
-                robot.vy += VELOCITY_INCR
+                acc_y = ACC_INCR
             if event.type == KEYDOWN and (event.key == K_DOWN):
-                robot.vy -= VELOCITY_INCR
+                acc_y = -ACC_INCR
             if event.type == KEYDOWN and (event.key == K_LEFT):
-                robot.vx -= VELOCITY_INCR
+                acc_x = -ACC_INCR
             if event.type == KEYDOWN and (event.key == K_RIGHT):
-                robot.vx += VELOCITY_INCR
+                acc_x = ACC_INCR
         
 
         tx, ty = targets[target_i]
@@ -215,10 +235,13 @@ def main():
         
         
         # control acc
-        dvx = limit_vel(tx-robot.x) - robot.vx
-        dvy = limit_vel(ty-robot.y) - robot.vy
-        acc_x = dvx*FPS
-        acc_y = dvy*FPS       
+        # dvx = limit_vel(tx-robot.x) - robot.vx
+        # dvy = limit_vel(ty-robot.y) - robot.vy
+        # acc_x = dvx*FPS
+        # acc_y = dvy*FPS      
+        
+        
+         
         
         
         print("Robot ", robot.x, robot.y, " || ", robot.vx, robot.vy)
@@ -233,8 +256,22 @@ def main():
         # d = robot.velocity / FPS
         # robot.x += np.cos(robot.theta) * d
         # robot.y += np.sin(robot.theta) * d
-
         
+        
+        
+        landmarks_meas = []
+        for a in anchors:
+            if robot.is_visible(a):
+                # simulate measurement 
+                # we measure landmark relative to robot + we know landmarks position => we can get the robot position
+                landmarks_meas.extend([robot.x, robot.y])
+            
+        measurements_pub = Float64MultiArray()
+        measurements_pub.data = landmarks_meas
+        # if len(measurements_pub.data) == 0:
+        #     measurements_pub.data = [9999]
+        
+        pub_landmarks_obs.publish(measurements_pub)        
         
         noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
         pub_acc_cmd.publish(Vector3(noisy_acc_cmd_x, noisy_acc_cmd_y, 0))
