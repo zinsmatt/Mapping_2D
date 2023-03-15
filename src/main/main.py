@@ -15,6 +15,9 @@ from draw import *
 from constants import *
 from utils import *
 
+import matplotlib.pyplot as plt
+
+
 
 def ellipes_from_cov(P, confidence):
     Pxy = P[:2, :2]
@@ -35,16 +38,31 @@ est_trajectory_integation = []
 est_trajectory_kf = []
 gt_trajectory = []
 
-ellipse = None
+est_landmarks = {}
+est_landmarks_cov = {}
+
+pos_est_error_integ = []
+pos_est_error_kf = []
+
+est_pos_integ = None
+est_pos = None
+est_pos_cov = None
 
 def shutdownHook():
     print("Quitting")
     pygame.quit()
     sys.exit()
 
+def print_errors():
+    global pos_est_error_integ, pos_est_error_kf
+    plt.plot(pos_est_error_integ, label="integration")
+    plt.plot(pos_est_error_kf, label="kf")
+    plt.legend()
+    plt.show()
 
 def position_estimation_integration_callback(msg):
-    global SCREEN
+    global est_pos_integ
+    est_pos_integ = [msg.x, msg.y]
     pos = create_point(msg.x, msg.y)
     last_pos = est_trajectory_integation[-1]
     v = np.asarray(pos) - np.asarray(last_pos)
@@ -53,20 +71,35 @@ def position_estimation_integration_callback(msg):
 
 
 def position_estimation_kf_callback(msg):
-    global SCREEN
+    global est_pos, est_pos_cov
+    
     data = msg.data
-    pos = create_point(data[0], data[1])
-    P = np.asarray(msg.data[2:]).reshape(4, 4)
+    n = int(data[0])
+    state = data[1:1+n]
+    pos = create_point(state[0], state[1])
+    state_landmarks = np.asarray(state[4:]).reshape(-1, 2).tolist()
+    
+    P = np.asarray(data[1+n:1+n+n*n]).reshape(n, n)
+    
+    landmark_index_mapping = data[1+n+n*n:]
+    print("landmark index mappgin", landmark_index_mapping, len(landmark_index_mapping))
+    to_landmark_index = {}
+    for i in range(0, len(landmark_index_mapping), 2):
+        to_landmark_index[landmark_index_mapping[i]] = landmark_index_mapping[i+1]
+    
+    for i, l in enumerate(state_landmarks):
+        idx = to_landmark_index[i]
+        est_landmarks[idx] = l
+        est_landmarks_cov[idx] = P[4+2*i:4+2*i+2, 4+2*i:4+2*i+2]
+    
     
     last_pos = est_trajectory_kf[-1]
     v = np.asarray(pos) - np.asarray(last_pos)
     if v.dot(v) > 0.1**2:
         est_trajectory_kf.append(pos)
     
-    global ellipse
-    ellipse = ellipes_from_cov(P, 0.95)
-    print(ellipse)
-
+    est_pos = state[:2]
+    est_pos_cov = P[:2, :2]
 
 
 def add_gaussian_noise(arr, scale):
@@ -129,7 +162,8 @@ def main():
 
     pub_velocity = rospy.Publisher("perception_vel", Vector3, queue_size=10)
     pub_acc_cmd = rospy.Publisher("acc_cmd", Vector3, queue_size=10)
-    pub_landmarks_obs = rospy.Publisher("landmarks_obs", Float64MultiArray, queue_size=10)
+    pub_cp_obs = rospy.Publisher("cp_obs", Float64MultiArray, queue_size=10)
+    pub_landmark_obs = rospy.Publisher("landmarks_obs", Float64MultiArray, queue_size=10)
     pub_quit = rospy.Publisher("perception_quit", Bool, queue_size=2)
     sub_est_pos_integ = rospy.Subscriber("estimation_pos_integration", Vector3, position_estimation_integration_callback)
     sub_est_pos_kf = rospy.Subscriber("estimation_pos_kf", Float64MultiArray, position_estimation_kf_callback)
@@ -152,15 +186,18 @@ def main():
     est_trajectory_kf.append([ORIGIN_X, ORIGIN_Y])
 
 
-    # anchors = [(70, 40), (30, 30), (80, 20), (10, 80)]
-    # anchors = [(20, 20), (-30, 30), (-35, 20), (10, -35)]
-    # anchors = np.vstack((np.random.uniform(-10, XMAX, size=NUM_ANCHORS),
-    #                      np.random.uniform(-100, 100, size=NUM_ANCHORS))).T
-    # anchors = np.vstack((np.random.uniform(-100, 100, size=NUM_ANCHORS),
-    #                      np.random.uniform(-100, 100, size=NUM_ANCHORS))).T
+    # control_points = [(70, 40), (30, 30), (80, 20), (10, 80)]
+    # control_points = [(20, 20), (-30, 30), (-35, 20), (10, -35)]
+    # control_points = np.vstack((np.random.uniform(-10, XMAX, size=NUM_CONTROL_POINTS),
+    #                      np.random.uniform(-100, 100, size=NUM_CONTROL_POINTS))).T
+    # control_points = np.vstack((np.random.uniform(-100, 100, size=NUM_CONTROL_POINTS),
+    #                      np.random.uniform(-100, 100, size=NUM_CONTROL_POINTS))).T
     
-    anchors = np.vstack((np.random.uniform(-50, 50, size=NUM_ANCHORS),
-                         np.random.uniform(-50, 50, size=NUM_ANCHORS))).T
+    control_points = np.vstack((np.random.uniform(-50, 50, size=NUM_CONTROL_POINTS),
+                                np.random.uniform(-50, 50, size=NUM_CONTROL_POINTS))).T
+    
+    landmarks = np.vstack((np.random.uniform(-50, 50, size=NUM_LANDMARKS),
+                           np.random.uniform(-50, 50, size=NUM_LANDMARKS))).T
     
     
     
@@ -198,6 +235,7 @@ def main():
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 pub_quit.publish(Bool(True))
+                print_errors()
                 pygame.quit()
                 sys.exit()
             # # if event.type == KEYDOWN and (event.key == K_UP):
@@ -259,26 +297,30 @@ def main():
         
         
         
-        landmarks_meas = []
-        for a in anchors:
+        # Measure control points
+        control_points_meas = []
+        for a in control_points:
             if robot.is_visible(a):
                 # simulate measurement 
                 # we measure landmark relative to robot + we know landmarks position => we can get the robot position
-                landmarks_meas.extend([robot.x, robot.y])
+                control_points_meas.extend([a[0]-robot.x, a[1]-robot.y, a[0], a[1]])
             
-        measurements_pub = Float64MultiArray()
-        measurements_pub.data = landmarks_meas
-        # if len(measurements_pub.data) == 0:
-        #     measurements_pub.data = [9999]
-        
-        pub_landmarks_obs.publish(measurements_pub)        
-        
-        noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
-        pub_acc_cmd.publish(Vector3(noisy_acc_cmd_x, noisy_acc_cmd_y, 0))
+        cp_meas_pub = Float64MultiArray()
+        cp_meas_pub.data = control_points_meas
+        pub_cp_obs.publish(cp_meas_pub)        
         
         
-        noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
-        pub_velocity.publish(Vector3(noisy_vx, noisy_vy, 0))
+        # Measure landmarks        
+        landmarks_meas = []
+        for i, a in enumerate(landmarks):
+            if robot.is_visible(a):
+                landmarks_meas.extend([a[0]-robot.x, a[1]-robot.y, i])
+        landmarks_meas_pub = Float64MultiArray()
+        landmarks_meas_pub.data = landmarks_meas
+        pub_landmark_obs.publish(landmarks_meas_pub)   
+            
+        
+        
         
         
         
@@ -307,22 +349,53 @@ def main():
         pygame.draw.polygon(ALPHA_SCREEN, FOV_COLOR, shift(fov, -dx, -dy))
         pygame.draw.polygon(SCREEN, ROBOT_COLOR, shift(triangle, -dx, -dy))
         
-        if ellipse is not None:
-            axes, angle = ellipse
-            ell_pts = create_ellipse(robot.x, robot.y, axes[0], axes[1], angle)
-            pygame.draw.polygon(SCREEN, (255, 255, 255), shift(ell_pts, -dx, -dy), width=2)
+        
+        if est_pos_cov is not None:
+            axes, angle = ellipes_from_cov(est_pos_cov, 0.99)
+            ell_pts = create_ellipse(est_pos[0], est_pos[1], axes[0], axes[1], angle)
+            pygame.draw.polygon(SCREEN, (255, 255, 255), shift(ell_pts, -dx, -dy), width=1)
             
             
         
         
-        for a in anchors:
+        for a in control_points:
+            square_pts = create_square_polygon(*a, ANCHORS_SIZE)
+            col = ANCHORS_COL
+            if robot.is_visible(a):
+                col = ANCHORS_VISIBLE_COL
+            pygame.draw.polygon(SCREEN, col, shift(square_pts, -dx, -dy))
+
+        for a in landmarks:
             circle = create_circle(*a, ANCHORS_SIZE)
             col = ANCHORS_COL
             if robot.is_visible(a):
                 col = ANCHORS_VISIBLE_COL
             pygame.draw.circle(SCREEN, col, shift(circle["center"], -dx, -dy), circle["radius"])
+            
+            
+        for idx, a in est_landmarks.items():
+            circle = create_circle(*a, ANCHORS_SIZE)
+            col = (0, 0, 255)
+            pygame.draw.circle(SCREEN, col, shift(circle["center"], -dx, -dy), circle["radius"])
+            
+            axes, angle = ellipes_from_cov(est_landmarks_cov[idx], 0.99)
+            ell_pts = create_ellipse(a[0], a[1], axes[0], axes[1], angle)
+            pygame.draw.polygon(SCREEN, (255, 255, 255), shift(ell_pts, -dx, -dy), width=1)
+            
 
 
+        noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
+        pub_acc_cmd.publish(Vector3(noisy_acc_cmd_x, noisy_acc_cmd_y, 0))
+        
+        
+        noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
+        pub_velocity.publish(Vector3(noisy_vx, noisy_vy, 0))
+        
+        if est_pos is not None and est_pos_integ is not None:
+            pos_est_error_kf.append(distance(est_pos, [robot.x, robot.y]))
+            pos_est_error_integ.append(distance(est_pos_integ, [robot.x, robot.y]))
+        
+        
         SCREEN.blit(ALPHA_SCREEN, (0, 0))
         pygame.display.update()
         FPSCLOCK.tick(FPS)
@@ -333,3 +406,4 @@ if __name__ == '__main__':
         main()
     except rospy.ROSInterruptException:
         pass
+    

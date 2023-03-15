@@ -46,6 +46,23 @@ def create_circle(x, y, size):
         "radius": size / SCALING
     }
 
+def create_square_polygon(x, y, size):
+    s = size / 2
+    corners = np.array([
+        [x-s, y-s],
+        [x+s, y-s],
+        [x+s, y+s],
+        [x-s, y+s],
+    ])
+    corners /= SCALING
+    corners[:, 1] = -corners[:, 1]
+    
+    corners[:, 0] += ORIGIN_X
+    corners[:, 1] += ORIGIN_Y
+    
+    return corners.tolist()
+
+
 def create_point(x, y):
     return [ORIGIN_X + x / SCALING, ORIGIN_Y - y / SCALING]
 
