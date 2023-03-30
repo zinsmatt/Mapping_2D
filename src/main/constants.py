@@ -8,12 +8,12 @@ SCALING = 0.1 # m/pixel
 ANCHORS_SIZE = 0.5
 
 FOV_RANGE = 10.0
-FOV_HALF_ANGLE = np.pi #np.pi / 4
+FOV_HALF_ANGLE = np.pi/4 #np.pi / 4
 
 BACKGROUND_COLOR = (55, 55, 55)
 
 VELOCITY_INCR = 1.0
-THETA_INCR = np.pi / 20
+THETA_INCR = np.pi / 40
 POS_INCR = 0.5
 
 ANCHORS_COL = (255, 0, 0)

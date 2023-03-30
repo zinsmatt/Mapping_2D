@@ -181,8 +181,7 @@ def main():
     robot = Robot()
     robot.x = 0
     robot.y = 0
-    robot.theta = 0#-np.pi / 2
-    robot.velocity = 0
+    robot.theta = -np.pi / 2
     est_trajectory_integation.append([ORIGIN_X, ORIGIN_Y])
     est_trajectory_kf.append([ORIGIN_X, ORIGIN_Y])
 
@@ -220,29 +219,25 @@ def main():
         #     robot.x -= POS_INCR
         # if pressed[pygame.K_RIGHT]:
         #     robot.x += POS_INCR
+            
+        # if pressed[pygame.K_UP]:
+        #     robot.vy += VELOCITY_INCR
+        # if pressed[pygame.K_DOWN]:
+        #     robot.vy -= VELOCITY_INCR
+        # if pressed[pygame.K_LEFT]:
+        #     robot.vx -= VELOCITY_INCR
+        # if pressed[pygame.K_RIGHT]:
+        #     robot.vx += VELOCITY_INCR
         
         acc_x = 0.0
         acc_y = 0.0
-        acc = 0.0
-        theta_inc = 0
-        
-        ACC_INCR = 10
-        if pressed[pygame.K_UP]:
-            acc = ACC_INCR
-        if pressed[pygame.K_DOWN]:
-            acc = -ACC_INCR
-        if pressed[pygame.K_LEFT]:
-            theta_inc = THETA_INCR
-        if pressed[pygame.K_RIGHT]:
-            theta_inc = -THETA_INCR
         
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 pub_quit.publish(Bool(True))
-                # print_errors()
+                print_errors()
                 pygame.quit()
                 sys.exit()
-
             # # if event.type == KEYDOWN and (event.key == K_UP):
             # #     robot.velocity += VELOCITY_INCR
             # # if event.type == KEYDOWN and (event.key == K_DOWN):
@@ -261,22 +256,20 @@ def main():
             # if event.type == KEYDOWN and (event.key == K_RIGHT):
             #     robot.vx += VELOCITY_INCR
                 
-            # ACC_INCR = 10
-            # if event.type == KEYDOWN and (event.key == K_UP):
-            #     acc = ACC_INCR
-            # if event.type == KEYDOWN and (event.key == K_DOWN):
-            #     acc = -ACC_INCR
-            # if event.type == KEYDOWN and (event.key == K_LEFT):
-            #     theta_inc = THETA_INCR
-            # if event.type == KEYDOWN and (event.key == K_RIGHT):
-            #     theta_inc = THETA_INCR
-                
-                
+            ACC_INCR = 10
+            if event.type == KEYDOWN and (event.key == K_UP):
+                acc_y = ACC_INCR
+            if event.type == KEYDOWN and (event.key == K_DOWN):
+                acc_y = -ACC_INCR
+            if event.type == KEYDOWN and (event.key == K_LEFT):
+                acc_x = -ACC_INCR
+            if event.type == KEYDOWN and (event.key == K_RIGHT):
+                acc_x = ACC_INCR
         
 
-        # tx, ty = targets[target_i]
-        # if (robot.x - tx)**2 + (robot.y - ty)**2 < 0.1**2:
-        #     target_i = (target_i+1) % len(targets)
+        tx, ty = targets[target_i]
+        if (robot.x - tx)**2 + (robot.y - ty)**2 < 0.1**2:
+            target_i = (target_i+1) % len(targets)
         
         
         # control acc
@@ -289,21 +282,15 @@ def main():
          
         
         
-        # print("Robot ", robot.x, robot.y, " || ", robot.vx, robot.vy)
-        print("Robot ", robot.x, robot.y, " || ", robot.theta, robot.velocity)
+        print("Robot ", robot.x, robot.y, " || ", robot.vx, robot.vy)
         
-        c=np.cos(robot.theta)
-        s=np.sin(robot.theta)
-        robot.x += 0.5 * acc * c / FPS**2 + c * robot.velocity / FPS
-        robot.y += 0.5 * acc * s / FPS**2 + s * robot.velocity / FPS
-        # robot.x += 0.5 * acc_x / FPS**2 + robot.vx / FPS
-        # robot.y += 0.5 * acc_y / FPS**2 + robot.vy / FPS
         
-        robot.velocity += acc / FPS
-        robot.theta += theta_inc
         
-        # robot.vx += acc_x / FPS
-        # robot.vy += acc_y / FPS
+        robot.x += 0.5 * acc_x / FPS**2 + robot.vx / FPS
+        robot.y += 0.5 * acc_y / FPS**2 + robot.vy / FPS
+        
+        robot.vx += acc_x / FPS
+        robot.vy += acc_y / FPS
         # d = robot.velocity / FPS
         # robot.x += np.cos(robot.theta) * d
         # robot.y += np.sin(robot.theta) * d
@@ -324,13 +311,13 @@ def main():
         
         
         # Measure landmarks        
-        # landmarks_meas = []
-        # for i, a in enumerate(landmarks):
-        #     if robot.is_visible(a):
-        #         landmarks_meas.extend([a[0]-robot.x, a[1]-robot.y, i])
-        # landmarks_meas_pub = Float64MultiArray()
-        # landmarks_meas_pub.data = landmarks_meas
-        # pub_landmark_obs.publish(landmarks_meas_pub)   
+        landmarks_meas = []
+        for i, a in enumerate(landmarks):
+            if robot.is_visible(a):
+                landmarks_meas.extend([a[0]-robot.x, a[1]-robot.y, i])
+        landmarks_meas_pub = Float64MultiArray()
+        landmarks_meas_pub.data = landmarks_meas
+        pub_landmark_obs.publish(landmarks_meas_pub)   
             
         
         
@@ -397,16 +384,12 @@ def main():
             
 
 
-        # noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
-        noisy_acc_cmd, _ = add_gaussian_noise([acc, 0], ACC_NOISE_SCALE)
-        noisy_delta_theta_cmd = add_gaussian_noise([theta_inc], 2*np.pi/180)[0]
-        pub_acc_cmd.publish(Vector3(noisy_acc_cmd, noisy_delta_theta_cmd, 0))
+        noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
+        pub_acc_cmd.publish(Vector3(noisy_acc_cmd_x, noisy_acc_cmd_y, 0))
         
         
-        # noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
-        noisy_vel, _ = add_gaussian_noise([robot.velocity, 0], VELOCITY_NOISE_SCALE)
-        noisy_theta = add_gaussian_noise([robot.theta], 2*np.pi/180)[0]
-        pub_velocity.publish(Vector3(noisy_vel, noisy_theta, 0))
+        noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
+        pub_velocity.publish(Vector3(noisy_vx, noisy_vy, 0))
         
         if est_pos is not None and est_pos_integ is not None:
             pos_est_error_kf.append(distance(est_pos, [robot.x, robot.y]))
