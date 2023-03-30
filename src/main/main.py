@@ -239,7 +239,7 @@ def main():
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 pub_quit.publish(Bool(True))
-                # print_errors()
+                print_errors()
                 pygame.quit()
                 sys.exit()
 
@@ -324,13 +324,13 @@ def main():
         
         
         # Measure landmarks        
-        # landmarks_meas = []
-        # for i, a in enumerate(landmarks):
-        #     if robot.is_visible(a):
-        #         landmarks_meas.extend([a[0]-robot.x, a[1]-robot.y, i])
-        # landmarks_meas_pub = Float64MultiArray()
-        # landmarks_meas_pub.data = landmarks_meas
-        # pub_landmark_obs.publish(landmarks_meas_pub)   
+        landmarks_meas = []
+        for i, a in enumerate(landmarks):
+            if robot.is_visible(a):
+                landmarks_meas.extend([a[0]-robot.x, a[1]-robot.y, i]) # dx, dy, idx
+        landmarks_meas_pub = Float64MultiArray()
+        landmarks_meas_pub.data = landmarks_meas
+        pub_landmark_obs.publish(landmarks_meas_pub)
             
         
         
@@ -396,16 +396,17 @@ def main():
             pygame.draw.polygon(SCREEN, (255, 255, 255), shift(ell_pts, -dx, -dy), width=1)
             
 
-
+        # Send command
         # noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
-        noisy_acc_cmd, _ = add_gaussian_noise([acc, 0], ACC_NOISE_SCALE)
-        noisy_delta_theta_cmd = add_gaussian_noise([theta_inc], 2*np.pi/180)[0]
-        pub_acc_cmd.publish(Vector3(noisy_acc_cmd, noisy_delta_theta_cmd, 0))
+        # noisy_acc_cmd, _ = add_gaussian_noise([acc, 0], ACC_NOISE_SCALE)
+        # noisy_delta_theta_cmd = add_gaussian_noise([theta_inc], 2*np.pi/180)[0]
+        # pub_acc_cmd.publish(Vector3(noisy_acc_cmd, noisy_delta_theta_cmd, 0))
+        pub_acc_cmd.publish(Vector3(0, 0, 0)) # do not send command but just publish to do predictios
         
         
         # noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
-        noisy_vel, _ = add_gaussian_noise([robot.velocity, 0], VELOCITY_NOISE_SCALE)
-        noisy_theta = add_gaussian_noise([robot.theta], 2*np.pi/180)[0]
+        noisy_vel, _ = add_gaussian_noise([robot.velocity, 0], 2*VELOCITY_NOISE_SCALE)
+        noisy_theta = add_gaussian_noise([robot.theta], (5*np.pi)/180)[0]
         pub_velocity.publish(Vector3(noisy_vel, noisy_theta, 0))
         
         if est_pos is not None and est_pos_integ is not None:
