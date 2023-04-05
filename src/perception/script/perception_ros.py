@@ -5,7 +5,7 @@ from geometry_msgs.msg import Vector3
 from std_msgs.msg import Float64MultiArray
 from std_msgs.msg import Bool
 import functools
-
+import g2o
 
 print = functools.partial(print, flush=True)
 
@@ -179,6 +179,67 @@ class KF:
             self.meas_cov[2+idx*2] = varLandmark**2
             self.meas_cov[2+idx*2+1] = varLandmark**2
             
+
+
+class PoseGraphOptim:
+    def __init__(self):
+        self.keyframes = []
+
+    def add_keyframe(self, pose):
+        self.keyframes.append(pose)
+        
+    def serialize(self):
+        res = [len(self.keyframes)]
+        for p in self.keyframes:
+            res.extend(p)
+        return res       
+    
+    def optimize(self, final_pos):
+        print(self.keyframes)
+        print(final_pos)
+        optimizer = g2o.SparseOptimizer()
+        solver = g2o.BlockSolverSE2(g2o.LinearSolverCholmodSE2())
+        solver = g2o.OptimizationAlgorithmLevenberg(solver)
+        optimizer.set_algorithm(solver)
+        
+        vertices = []
+        for i, pose in enumerate(self.keyframes):
+            if i  == len(self.keyframes)-1:
+                pe2 = g2o.SE2(final_pos[0], final_pos[1], pose[2])
+            else:
+                pe2 = g2o.SE2(pose)
+            v = g2o.VertexSE2()
+            v.set_id(i)
+            v.set_estimate(pe2)
+            if i  == len(self.keyframes)-1 or i == 0:
+                v.set_fixed(True)    
+            vertices.append(v)
+            optimizer.add_vertex(v)
+
+        for i in range(len(self.keyframes)-1):
+            p0 = np.asarray(self.keyframes[i])
+            p1 = np.asarray(self.keyframes[i+1])
+            s0 = g2o.SE2(p0)
+            s1 = g2o.SE2(p1)
+            T_rel_0_to_1 = s0.inverse() * s1
+            
+            edge = g2o.EdgeSE2()
+            edge.set_vertex(0, vertices[i])
+            edge.set_vertex(1, vertices[i+1])
+            edge.set_measurement(T_rel_0_to_1)
+            edge.set_information(np.identity(3))
+            edge.compute_error()
+            optimizer.add_edge(edge)
+
+        optimizer.initialize_optimization()
+        optimizer.set_verbose(True)
+        optimizer.optimize(500)
+
+        for i, v in enumerate(vertices):
+            p = v.estimate()
+            self.keyframes[i][:2] = p.translation()
+            self.keyframes[i][2] = p.rotation().angle()
+        
         
 
 class PerceptionRos:
@@ -194,6 +255,17 @@ class PerceptionRos:
             "/estimation_pos_kf",
             Float64MultiArray,
             queue_size=10
+        )
+        
+        self.pub_keyframes_ = rospy.Publisher(
+            "/keyframes",
+            Float64MultiArray,
+            queue_size=10
+        )
+        self.pub_mode_ = rospy.Publisher(
+            "/mode",
+            Bool,
+            queue_size=0
         )
 
         self.sub_vel_ = rospy.Subscriber(
@@ -227,6 +299,10 @@ class PerceptionRos:
         self.kf = None
         self.kf = KF(0.0, 0.0, 0.0, 0.0)
         self.meas = []
+        self.it = 0
+        self.posegraph = PoseGraphOptim()
+        self.previous_cp_obs = 0
+        self.loop_closure_detected = False
     
     def acc_cmd_callback(self, msg: Vector3) -> None:
         ## no command (only motion model)
@@ -235,10 +311,21 @@ class PerceptionRos:
 
 
     def observe_control_points_callback(self, msg):
+        if self.previous_cp_obs == 1 and len(msg.data) == 0:
+            self.previous_cp_obs = 2
         for i in range(len(msg.data)//4):
             meas = [msg.data[i*4], msg.data[i*4+1]]
             cp_pos = [msg.data[i*4+2], msg.data[i*4+3]]
             self.kf.add_abs_pos_measurement([cp_pos[0] - meas[0], cp_pos[1] - meas[1]])
+            if self.previous_cp_obs == 0:
+                self.previous_cp_obs = 1
+            elif self.previous_cp_obs == 2:
+                self.previous_cp_obs = 3
+
+        if self.previous_cp_obs == 3:
+            self.pub_mode_.publish(Bool(True))
+            # self.send_keyframes()
+            self.loop_closure_detected = True
             
     def observe_landmarks_callback(self, msg):
         for i in range(len(msg.data)//3):
@@ -251,27 +338,48 @@ class PerceptionRos:
 
     def velocity_callback(self, msg: Vector3) -> None:
         print("velo callback")
-        self.kf.correct(msg.x, msg.y)
         
-        x, y = self.kf.X[:2]
+        if self.loop_closure_detected:
+            print("TREAT  LOOP CLOSUURE")
+            print("asbosulte pos : ", self.kf.abs_pos_measurements)
+            measured_pos = self.kf.abs_pos_measurements[-1]
+            self.kf.abs_pos_measurements = []
+            self.kf.correct(msg.x, msg.y)
+            self.posegraph.add_keyframe(self.kf.X[:3].tolist())
+            self.posegraph.optimize(measured_pos)
+            
+            self.send_keyframes()
+            
+        else:
+            self.kf.correct(msg.x, msg.y)
+            
+            x, y = self.kf.X[:2]
+            
+            # Example of publishing acceleration command to Flyappy
+            self.x += (msg.x * np.cos(msg.y)) / FPS
+            self.y += (msg.x * np.sin(msg.y)) / FPS
+            self.pub_pos_integration_.publish(Vector3(self.x, self.y, 0))
+            
+            
+            array = Float64MultiArray()
+            n = self.kf.X.shape[0]
+            inv_mapping = np.array([[b, a] for a, b in self.kf.landmark_index_to_index.items()])
+            array.data = [n] + self.kf.X.flatten().tolist() + self.kf.P.flatten().tolist() + inv_mapping.flatten().tolist()
+            self.pub_pos_kf_.publish(array)
+            
+            if self.it % 1 == 0:
+                self.posegraph.add_keyframe(self.kf.X[:3].tolist())
+        self.it += 1
         
-        # Example of publishing acceleration command to Flyappy
-        self.x += (msg.x * np.cos(msg.y)) / FPS
-        self.y += (msg.x * np.sin(msg.y)) / FPS
-        self.pub_pos_integration_.publish(Vector3(self.x, self.y, 0))
-        
-        
+    def send_keyframes(self):
         array = Float64MultiArray()
-        n = self.kf.X.shape[0]
-        inv_mapping = np.array([[b, a] for a, b in self.kf.landmark_index_to_index.items()])
-        array.data = [n] + self.kf.X.flatten().tolist() + self.kf.P.flatten().tolist() + inv_mapping.flatten().tolist()
-        self.pub_pos_kf_.publish(array)
+        array.data = self.posegraph.serialize()
+        self.pub_keyframes_.publish(array)        
         
 
     def quit(self, msg: Bool) -> None:
         # rospy.loginfo("Quit.")
-        pass
-
+        self.send_keyframes()
 
 def main() -> None:
     rospy.init_node('perception_node', anonymous=True)

@@ -48,6 +48,13 @@ est_pos_integ = None
 est_pos = None
 est_pos_cov = None
 
+keyframes = []
+
+display_dx = 0
+display_dy = 0
+mode = "run" # // analysis
+
+
 def shutdownHook():
     print("Quitting")
     pygame.quit()
@@ -102,6 +109,13 @@ def position_estimation_kf_callback(msg):
     est_pos_cov = P[:2, :2]
 
 
+def keyframes_callback(msg):
+    data = msg.data
+    n = int(data[0])
+    for i in range(n):
+        keyframes.append(data[i*3+1:i*3+1+3])
+
+
 def add_gaussian_noise(arr, scale):
     noise = np.random.normal(0, scale, len(arr))
     return [x + eps for x, eps in zip(arr, noise)]
@@ -153,7 +167,12 @@ def shift(arr, dx, dy):
     return res
 
 
+def switch_mode_callback(m):
+    if m:
+        global mode
+        mode = "analysis"
 
+        
 def main():
     # Initialize ROS
     rospy.init_node("main", anonymous=True)
@@ -167,7 +186,8 @@ def main():
     pub_quit = rospy.Publisher("perception_quit", Bool, queue_size=2)
     sub_est_pos_integ = rospy.Subscriber("estimation_pos_integration", Vector3, position_estimation_integration_callback)
     sub_est_pos_kf = rospy.Subscriber("estimation_pos_kf", Float64MultiArray, position_estimation_kf_callback)
-
+    sub_keyframes = rospy.Subscriber("keyframes", Float64MultiArray, keyframes_callback)
+    sub_mode = rospy.Subscriber("mode", Bool, switch_mode_callback)
 
     global SCREEN, FPSCLOCK
     pygame.init()
@@ -185,7 +205,7 @@ def main():
     robot.velocity = 0
     est_trajectory_integation.append([ORIGIN_X, ORIGIN_Y])
     est_trajectory_kf.append([ORIGIN_X, ORIGIN_Y])
-
+    
 
     # control_points = [(70, 40), (30, 30), (80, 20), (10, 80)]
     # control_points = [(20, 20), (-30, 30), (-35, 20), (10, -35)]
@@ -196,16 +216,16 @@ def main():
     
     control_points = np.vstack((np.random.uniform(-50, 50, size=NUM_CONTROL_POINTS),
                                 np.random.uniform(-50, 50, size=NUM_CONTROL_POINTS))).T
+    control_points = np.array([[20, 5]])
     
     landmarks = np.vstack((np.random.uniform(-50, 50, size=NUM_LANDMARKS),
                            np.random.uniform(-50, 50, size=NUM_LANDMARKS))).T
     
     
-    
 
     pygame.key.set_repeat(int(1000/FPS))
 
-    global targets, target_i
+    global targets, target_i, mode
     while True:
         SCREEN.fill(BACKGROUND_COLOR)
         ALPHA_SCREEN.fill([0,0,0,0])
@@ -225,21 +245,33 @@ def main():
         acc_y = 0.0
         acc = 0.0
         theta_inc = 0
-        
+        DISPLAY_INCR = 20
         ACC_INCR = 10
         if pressed[pygame.K_UP]:
+            display_dy -= DISPLAY_INCR
             acc = ACC_INCR
         if pressed[pygame.K_DOWN]:
             acc = -ACC_INCR
+            display_dy += DISPLAY_INCR
         if pressed[pygame.K_LEFT]:
             theta_inc = THETA_INCR
+            display_dx -= DISPLAY_INCR
         if pressed[pygame.K_RIGHT]:
             theta_inc = -THETA_INCR
+            display_dx += DISPLAY_INCR
+
         
         for event in pygame.event.get():
-            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+            
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_a):
                 pub_quit.publish(Bool(True))
-                print_errors()
+                mode = "analysis"
+                display_dx = dx
+                display_dy = dy
+                
+
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                # print_errors()
                 pygame.quit()
                 sys.exit()
 
@@ -288,64 +320,87 @@ def main():
         
          
         
+        if mode == "run":
         
-        # print("Robot ", robot.x, robot.y, " || ", robot.vx, robot.vy)
-        print("Robot ", robot.x, robot.y, " || ", robot.theta, robot.velocity)
-        
-        c=np.cos(robot.theta)
-        s=np.sin(robot.theta)
-        robot.x += 0.5 * acc * c / FPS**2 + c * robot.velocity / FPS
-        robot.y += 0.5 * acc * s / FPS**2 + s * robot.velocity / FPS
-        # robot.x += 0.5 * acc_x / FPS**2 + robot.vx / FPS
-        # robot.y += 0.5 * acc_y / FPS**2 + robot.vy / FPS
-        
-        robot.velocity += acc / FPS
-        robot.theta += theta_inc
-        
-        # robot.vx += acc_x / FPS
-        # robot.vy += acc_y / FPS
-        # d = robot.velocity / FPS
-        # robot.x += np.cos(robot.theta) * d
-        # robot.y += np.sin(robot.theta) * d
-        
-        
-        
-        # Measure control points
-        control_points_meas = []
-        for a in control_points:
-            if robot.is_visible(a):
-                # simulate measurement 
-                # we measure landmark relative to robot + we know landmarks position => we can get the robot position
-                control_points_meas.extend([a[0]-robot.x, a[1]-robot.y, a[0], a[1]])
+            # print("Robot ", robot.x, robot.y, " || ", robot.vx, robot.vy)
+            print("Robot ", robot.x, robot.y, " || ", robot.theta, robot.velocity)
             
-        cp_meas_pub = Float64MultiArray()
-        cp_meas_pub.data = control_points_meas
-        pub_cp_obs.publish(cp_meas_pub)        
-        
-        
-        # Measure landmarks        
-        landmarks_meas = []
-        for i, a in enumerate(landmarks):
-            if robot.is_visible(a):
-                landmarks_meas.extend([a[0]-robot.x, a[1]-robot.y, i]) # dx, dy, idx
-        landmarks_meas_pub = Float64MultiArray()
-        landmarks_meas_pub.data = landmarks_meas
-        pub_landmark_obs.publish(landmarks_meas_pub)
+            c=np.cos(robot.theta)
+            s=np.sin(robot.theta)
+            robot.x += 0.5 * acc * c / FPS**2 + c * robot.velocity / FPS
+            robot.y += 0.5 * acc * s / FPS**2 + s * robot.velocity / FPS
+            # robot.x += 0.5 * acc_x / FPS**2 + robot.vx / FPS
+            # robot.y += 0.5 * acc_y / FPS**2 + robot.vy / FPS
             
+            robot.velocity += acc / FPS
+            robot.theta += theta_inc
+            
+            # robot.vx += acc_x / FPS
+            # robot.vy += acc_y / FPS
+            # d = robot.velocity / FPS
+            # robot.x += np.cos(robot.theta) * d
+            # robot.y += np.sin(robot.theta) * d
         
         
-        
-        
+            # Measure control points
+            control_points_meas = []
+            for a in control_points:
+                if robot.is_visible(a):
+                    # simulate measurement 
+                    # we measure landmark relative to robot + we know landmarks position => we can get the robot position
+                    mx, my = add_gaussian_noise([a[0]-robot.x, a[1]-robot.y], 0.05)
+                    control_points_meas.extend([mx, my, a[0], a[1]])
+                
+            cp_meas_pub = Float64MultiArray()
+            cp_meas_pub.data = control_points_meas
+            pub_cp_obs.publish(cp_meas_pub)        
+            
+            
+            # Measure landmarks        
+            landmarks_meas = []
+            for i, a in enumerate(landmarks):
+                if robot.is_visible(a):
+                    mx, my = add_gaussian_noise([a[0]-robot.x, a[1]-robot.y], 0.05)
+                    print("measurements = ", [a[0]-robot.x, a[1]-robot.y])
+                    print("noisy meas = ", mx, my)
+                    landmarks_meas.extend([mx, my, i]) # dx, dy, idx
+            landmarks_meas_pub = Float64MultiArray()
+            landmarks_meas_pub.data = landmarks_meas
+            pub_landmark_obs.publish(landmarks_meas_pub)
+                
+            
+            # Send command
+            # noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
+            # noisy_acc_cmd, _ = add_gaussian_noise([acc, 0], ACC_NOISE_SCALE)
+            # noisy_delta_theta_cmd = add_gaussian_noise([theta_inc], 2*np.pi/180)[0]
+            # pub_acc_cmd.publish(Vector3(noisy_acc_cmd, noisy_delta_theta_cmd, 0))
+            pub_acc_cmd.publish(Vector3(0, 0, 0)) # do not send command but just publish to do predictios
+            
+            
+            # noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
+            noisy_vel, _ = add_gaussian_noise([robot.velocity, 0], 2*VELOCITY_NOISE_SCALE)
+            noisy_theta = add_gaussian_noise([robot.theta], (5*np.pi)/180)[0]
+            pub_velocity.publish(Vector3(noisy_vel, noisy_theta, 0))
+            
+            if est_pos is not None and est_pos_integ is not None:
+                pos_est_error_kf.append(distance(est_pos, [robot.x, robot.y]))
+                pos_est_error_integ.append(distance(est_pos_integ, [robot.x, robot.y]))
         
         
         
         
         triangle = create_triangle_polygon(robot.x, robot.y, robot.theta, ROBOT_SIZE)
         
-        center = np.asarray(triangle).mean(axis=0)
-        dx = center[0] - SCREENWIDTH/2
-        dy = center[1] - SCREENHEIGHT/2
-        
+        if mode == "run":
+            center = np.asarray(triangle).mean(axis=0)
+            dx = center[0] - SCREENWIDTH/2
+            dy = center[1] - SCREENHEIGHT/2
+            display_dx = dx
+            display_dy = dy
+        else:
+            dx = display_dx
+            dy = display_dy
+            
         gt_trajectory.append(center)
         
         fov = create_arc_polygon(robot.x, robot.y, robot.theta, FOV_RANGE, FOV_HALF_ANGLE)
@@ -395,23 +450,17 @@ def main():
             ell_pts = create_ellipse(a[0], a[1], axes[0], axes[1], angle)
             pygame.draw.polygon(SCREEN, (255, 255, 255), shift(ell_pts, -dx, -dy), width=1)
             
+        
+        # draw keyframes
+        for pose in keyframes:
+            tri = create_triangle_polygon(pose[0], pose[1], pose[2], ROBOT_SIZE * 0.6)
+            pygame.draw.polygon(SCREEN, KEYFRAMES_OPTIM_COLOR, shift(tri, -dx, -dy))
+            
 
-        # Send command
-        # noisy_acc_cmd_x, noisy_acc_cmd_y = add_gaussian_noise([acc_x, acc_y], ACC_NOISE_SCALE)
-        # noisy_acc_cmd, _ = add_gaussian_noise([acc, 0], ACC_NOISE_SCALE)
-        # noisy_delta_theta_cmd = add_gaussian_noise([theta_inc], 2*np.pi/180)[0]
-        # pub_acc_cmd.publish(Vector3(noisy_acc_cmd, noisy_delta_theta_cmd, 0))
-        pub_acc_cmd.publish(Vector3(0, 0, 0)) # do not send command but just publish to do predictios
+       
+            
         
         
-        # noisy_vx, noisy_vy = add_gaussian_noise([robot.vx, robot.vy], VELOCITY_NOISE_SCALE)
-        noisy_vel, _ = add_gaussian_noise([robot.velocity, 0], 2*VELOCITY_NOISE_SCALE)
-        noisy_theta = add_gaussian_noise([robot.theta], (5*np.pi)/180)[0]
-        pub_velocity.publish(Vector3(noisy_vel, noisy_theta, 0))
-        
-        if est_pos is not None and est_pos_integ is not None:
-            pos_est_error_kf.append(distance(est_pos, [robot.x, robot.y]))
-            pos_est_error_integ.append(distance(est_pos_integ, [robot.x, robot.y]))
         
         
         SCREEN.blit(ALPHA_SCREEN, (0, 0))
